@@ -1,0 +1,60 @@
+# --------------------
+# Data (never commit)
+# --------------------
+data/
+datasets/
+raw_data/
+processed_data/
+features/
+*.csv
+*.tsv
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.pkl
+
+# --------------------
+# Model artifacts
+# --------------------
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.joblib
+checkpoints/
+models/
+
+# --------------------
+# Experiment outputs
+# --------------------
+logs/
+runs/
+wandb/
+mlruns/
+outputs/
+results/
+
+# --------------------
+# Python
+# --------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+.venv/
+venv/
+
+# --------------------
+# Jupyter
+# --------------------
+.ipynb_checkpoints/
+
+# --------------------
+# OS / Editor junk
+# --------------------
+.DS_Store
+.idea/
+.vscode/
