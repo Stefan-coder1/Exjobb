@@ -52,7 +52,9 @@ Key design principles:
 ### Core Tactical Dimensions (current focus)
 
 - **Offensive width**  
-  Distribution of progressive passes and carries across pitch width
+  Distribution of progressive passes and carries across pitch width ✅ Done
+
+![Example of width](images/width_example.png)
 
 - **Directness**  
   Degree of forward-oriented ball progression
@@ -81,7 +83,7 @@ Key design principles:
 
 ## Pitch Zoning
 
-A **custom pitch zoning system** is used instead of default provider zones.
+A **custom pitch zoning system** is used instead of most common positionism zones.
 
 Zones are designed to capture:
 - width vs central occupation,
@@ -89,7 +91,11 @@ Zones are designed to capture:
 - defensive vs attacking context,
 - and tactically meaningful “dead” central areas.
 
-Zones are semantic and tactical — not purely geometric — and are used consistently across feature extraction.
+Zones are semantic and tactical — not purely geometric — and are used consistently across feature extraction. The zones have been constructed with feedback from experts in the field - former footballplayers and current analysts.
+
+Here is how the field is split up:
+
+![Pitch zonal split](images/zonal_split.png)
 
 ---
 
