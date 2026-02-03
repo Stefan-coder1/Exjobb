@@ -167,4 +167,5 @@ The repository is under active development.
 ## Author
 
 Stefan Ivchenko  
+stefanfredrikivchenko@gmail.com
 Master’s Thesis Project
