@@ -310,3 +310,43 @@ def get_progressive_actions(df, p=0.2, dx_min=8.0):
     df["slack"] = df[["slack_rel", "slack_abs"]].min(axis=1)
 
     return df
+
+def calc_width(df2, match=True):
+    """Calculate the average width of passes for each team in each match or overall.
+    
+    Parameters:
+    df (pd.DataFrame): DataFrame containing pass data with columns 'match_id', 'team_id', 'endy'.
+    match (bool): If True, calculate average width for each team in each match. If False, calculate overall average width for each team across all matches.
+
+    returns:
+    pd.DataFrame: DataFrame with columns 'match_id', 'team_id', and '
+    
+    
+    """
+    df_temp = df2.copy()
+    df = df_temp[df_temp["is_progressive"] == True]
+
+    # enforce integer IDs early
+    for c in ["match_id", "team_id"]:
+        if c in df.columns:
+            df[c] = df[c].astype("Int64") 
+    df["pass_width"] = abs(df["endy"] - 40)
+    if match:
+        match_width = (
+            df.groupby(["match_id", "team_id"])["pass_width"]
+            .mean()
+            .reset_index(name="mean_width")
+        )
+        match_width["match_id"] = match_width["match_id"].astype("Int64")
+        match_width["team_id"]  = match_width["team_id"].astype("Int64")
+        return match_width
+
+    team_width = (
+        df.groupby(["team_id", "match_id"])["pass_width"]
+        .mean()
+        .groupby("team_id")
+        .mean()
+        .reset_index(name="mean_width")
+    )
+    team_width["team_id"] = team_width["team_id"].astype("Int64")
+    return team_width
