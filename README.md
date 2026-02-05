@@ -57,12 +57,15 @@ Key design principles:
 ![Example of width](images/width_example.png)
 
 - **Directness**  
-  Degree of forward-oriented ball progression
+  Degree of forward-oriented ball progression ✅ Done
+  ![Example of directness](images/directness_example.png)
 
 - **Pass length**
 
 - **Tempo**  
-  Frequency of ball actions during possession phases
+  Frequency of ball actions during possession phases ✅ Done
+  ![Tempo vs possession](images/tempo_vs_possession.png)
+  ![passes per possession minute](images/passes_over_time_per_possession.png)
 
 - **Pressing intensity & triggers**  
   Defensive actions in the opponent’s half and time to ball regain

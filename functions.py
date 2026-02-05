@@ -181,6 +181,8 @@ def load_360_data(action_types=("Pass", "Carry", "Dribble"), three_sixty_only=Tr
                     "away_team": m["away_team"]["away_team_name"],
                     "home_team_id": m["home_team"]["home_team_id"],
                     "away_team_id": m["away_team"]["away_team_id"],
+       
+
                 })
 
     matches_360 = pd.DataFrame(rows).merge(
@@ -226,6 +228,9 @@ def load_360_data(action_types=("Pass", "Carry", "Dribble"), three_sixty_only=Tr
                 "endx": endx, "endy": endy,
                 "play_pattern": ev.get("play_pattern", {}).get("name"),
                 "possession": ev.get("possession"),
+                "timestamp": ev.get("timestamp"),
+                "duration": ev.get("duration", 0.0),
+                "possession_team_id": ev.get("possession_team", {}).get("id"),
             })
 
     df = pd.DataFrame(out)
@@ -350,3 +355,36 @@ def calc_width(df2, match=True):
     )
     team_width["team_id"] = team_width["team_id"].astype("Int64")
     return team_width
+
+def calc_directness(df, match=True):
+    """
+    Directness = share of actions that are progressive
+               = (# progressive) / (# total)
+
+    Requires:
+      - match_id
+      - team_id
+      - is_progressive (bool)
+    """
+    df_whole = df.copy()
+
+    # enforce integer IDs early
+    for c in ["match_id", "team_id"]:
+        if c in df_whole.columns:
+            df_whole[c] = df_whole[c].astype("Int64")
+
+    group_cols = ["match_id", "team_id"] if match else ["team_id"]
+
+    directness = (
+        df_whole.groupby(group_cols)
+        .agg(
+            n_total=("is_progressive", "size"),
+            n_prog=("is_progressive", "sum"),
+        )
+        .reset_index()
+    )
+
+    directness["directness"] = directness["n_prog"] / directness["n_total"]
+
+    return directness
+
