@@ -199,8 +199,7 @@ def load_360_data(action_types=("Pass", "Carry", "Dribble"), three_sixty_only=Tr
         evs = _load_events_for_match(events_dir, int(mid))
         for ev in evs:
             t = ev.get("type", {}).get("name")
-            if t not in action_types:
-                continue
+
 
             x, y = _xy(ev.get("location"))
             endx, endy = (np.nan, np.nan)
@@ -231,6 +230,9 @@ def load_360_data(action_types=("Pass", "Carry", "Dribble"), three_sixty_only=Tr
                 "timestamp": ev.get("timestamp"),
                 "duration": ev.get("duration", 0.0),
                 "possession_team_id": ev.get("possession_team", {}).get("id"),
+                "counterpress": bool(ev.get("counterpress", False)),
+                "under_pressure": bool(ev.get("under_pressure", False)),
+
             })
 
     df = pd.DataFrame(out)
@@ -470,6 +472,8 @@ def calc_possession_time(df, match=True):
 
     out["team_id"] = out["team_id"].astype("Int64")
     return out
+
+
 
 def calc_possession_share(df):
     """
