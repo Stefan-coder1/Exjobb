@@ -388,3 +388,143 @@ def calc_directness(df, match=True):
 
     return directness
 
+
+###NEW
+import numpy as np
+import pandas as pd
+
+def calc_possession_time(df, match=True):
+    """
+    Possession time (seconds) per team, computed from StatsBomb possession segments.
+
+    Required columns:
+      - match_id
+      - possession
+      - timestamp   (string like '00:00:06.293')
+      - duration    (seconds; may be missing -> treated as 0)
+      - possession_team_id  (recommended)
+        OR possession_team (object) if you still have nested dicts
+
+    Notes:
+      - Uses millisecond 'timestamp' rather than minute/second.
+      - Duration is added to the final event in a possession to avoid undercounting.
+    """
+    df = df.copy()
+
+    # enforce integer IDs early
+    for c in ["match_id"]:
+        if c in df.columns:
+            df[c] = df[c].astype("Int64")
+
+    # If you don't already have possession_team_id, try to derive it from nested dict
+    if "possession_team_id" not in df.columns:
+        if "possession_team" in df.columns:
+            df["possession_team_id"] = df["possession_team"].apply(
+                lambda x: x.get("id") if isinstance(x, dict) else np.nan
+            )
+        else:
+            raise ValueError("Need possession_team_id (or possession_team dict) in df.")
+
+    df["possession_team_id"] = df["possession_team_id"].astype("Int64")
+
+    # Parse timestamp to timedelta (supports milliseconds)
+    # Example: '00:00:06.293' -> Timedelta
+    df["t"] = pd.to_timedelta(df["timestamp"])
+
+    # duration may be missing
+    if "duration" not in df.columns:
+        df["duration"] = 0.0
+    df["duration"] = pd.to_numeric(df["duration"], errors="coerce").fillna(0.0)
+
+    # end time for each event
+    df["t_end"] = df["t"] + pd.to_timedelta(df["duration"], unit="s")
+
+    # Possession segments: one row per possession
+    seg_cols = ["match_id", "possession"]
+    seg = (
+        df.groupby(seg_cols, as_index=False)
+          .agg(
+              possession_team_id=("possession_team_id", "first"),
+              start=("t", "min"),
+              end=("t_end", "max"),
+          )
+    )
+
+    seg["possession_seconds"] = (seg["end"] - seg["start"]).dt.total_seconds().clip(lower=0)
+
+    # Aggregate to team (match-level or overall)
+    if match:
+        out = (
+            seg.groupby(["match_id", "possession_team_id"])["possession_seconds"]
+               .sum()
+               .reset_index()
+               .rename(columns={"possession_team_id": "team_id"})
+        )
+    else:
+        out = (
+            seg.groupby(["possession_team_id"])["possession_seconds"]
+               .sum()
+               .reset_index()
+               .rename(columns={"possession_team_id": "team_id"})
+        )
+
+    out["team_id"] = out["team_id"].astype("Int64")
+    return out
+
+def calc_possession_share(df):
+    """
+    Possession share per team per match based on estimated possession_seconds.
+    """
+    poss_time = calc_possession_time(df, match=True)
+
+    total = (
+        poss_time.groupby("match_id")["possession_seconds"]
+                 .sum()
+                 .reset_index(name="match_possession_seconds")
+    )
+
+    out = poss_time.merge(total, on="match_id", how="left")
+    out["possession_share"] = out["possession_seconds"] / out["match_possession_seconds"].replace(0, np.nan)
+    return out[["match_id", "team_id", "possession_seconds", "possession_share"]]
+
+def calc_tempo(df, match=True):
+    """
+    Tempo = number of possession-maintaining on-ball actions per minute of possession.
+
+    Uses:
+      - calc_possession_time(df, max_gap_s, match) for possession minutes
+
+    Included action types:
+      - Pass, Carry, Dribble
+
+    Required columns in df:
+      - match_id, team_id, type
+      - minute, second, period, possession
+    """
+    df = df.copy()
+
+    # enforce integer IDs early (same style as your other funcs)
+    for c in ["match_id", "team_id"]:
+        if c in df.columns:
+            df[c] = df[c].astype("Int64")
+
+    group_cols = ["match_id", "team_id"] if match else ["team_id"]
+
+    # 1) count tempo actions
+    df_actions = df[df["type"].isin(["Pass"])].copy()
+
+    action_counts = (
+        df_actions.groupby(group_cols)
+        .size()
+        .reset_index(name="n_actions")
+    )
+
+    # 2) possession time (seconds) using your function
+    poss_time = calc_possession_time(df, match=match)
+
+    # 3) tempo = actions / possession minutes
+    out = action_counts.merge(poss_time, on=group_cols, how="left")
+    out["possession_minutes"] = out["possession_seconds"] / 60.0
+    out["tempo"] = out["n_actions"] / out["possession_minutes"].replace(0, np.nan)
+
+    return out
