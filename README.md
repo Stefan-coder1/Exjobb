@@ -67,8 +67,12 @@ Key design principles:
   ![Tempo vs possession](images/tempo_vs_possession.png)
   ![passes per possession minute](images/passes_over_time_per_possession.png)
 
-- **Pressing intensity & triggers**  
-  Defensive actions in the opponent’s half and time to ball regain
+- **Pressing intensity**  ✅ Done
+  Number of pressing actions per minute of opposition possession
+  ![Pressing intensity](images/press_int.png)
+- **Pressing height**
+How high up the field does the team press? 
+ ![Pressing height](images/press_height.png)
 
 - **Backline height** *(derived / latent from 360 data)*
 
