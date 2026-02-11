@@ -13,6 +13,7 @@ from pathlib import Path
 import os
 from json import JSONDecodeError
 from matplotlib.patches import Polygon, Rectangle
+import functions
 
 def build_curve_fixed(df, match_id, team_id, max_poss_minutes=9.0):
     max_poss_seconds = max_poss_minutes * 60
@@ -128,4 +129,91 @@ def plot_two_matches(df, a, b):
 )
         ax.legend(loc="upper left")
 
+    plt.show()
+
+
+def plot_two_pressing_intensity_curves(df, row_a, row_b, max_opp_poss_min=15, labels=None):
+    if labels is None:
+        labels = ["A", "B"]
+    def _get_press_curve(df, row, max_opp_poss_min=None):
+        sub = df[
+            (df["match_id"] == row["match_id"]) &
+            (df["possession_team_id"] != row["team_id"])
+        ].copy()
+
+        sub["t"] = pd.to_timedelta(sub["timestamp"])
+        sub = sub.sort_values("t")
+
+        # opponent possession time (only within the same possession id)
+        sub["t_prev"] = sub["t"].shift(1)
+        same_poss = sub["possession"] == sub["possession"].shift(1)
+        dt = (sub["t"] - sub["t_prev"]).dt.total_seconds().clip(lower=0)
+        sub["opp_poss_dt"] = np.where(same_poss, dt, 0.0)
+        sub["cum_opp_poss"] = sub["opp_poss_dt"].cumsum()
+
+        # pressing actions (count only events made by the team of interest)
+        sub["is_press"] = (
+            (sub["team_id"] == row["team_id"]) &
+            (sub["type"].isin(functions.PRESS_EVENTS))
+        ).astype(int)
+        sub["cum_press"] = sub["is_press"].cumsum()
+
+        if max_opp_poss_min is not None:
+            sub = sub[sub["cum_opp_poss"] <= max_opp_poss_min * 60].copy()
+
+        x = sub["cum_opp_poss"].to_numpy() / 60.0
+        y = sub["cum_press"].to_numpy()
+        return x, y
+
+
+
+    x1, y1 = _get_press_curve(df, row_a, max_opp_poss_min=max_opp_poss_min)
+    x2, y2 = _get_press_curve(df, row_b, max_opp_poss_min=max_opp_poss_min)
+
+    plt.figure(figsize=(8, 6))
+    plt.plot(x1, y1, lw=2, label=labels[0])
+    plt.plot(x2, y2, lw=2, label=labels[1])
+
+    plt.xlabel("Opponent possession time (minutes)")
+    plt.ylabel("Cumulative pressing actions")
+    plt.title(f"Pressing intensity comparison (first {max_opp_poss_min} opp poss min)")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+def plot_two_pressing_height_distributions(df, row_a, row_b, labels=None, bins=30):
+    if labels is None:
+        labels = ["Team A", "Team B"]
+
+    def get_press_x(row):
+        press = df[
+            (df["match_id"] == row["match_id"]) &
+            (df["team_id"] == row["team_id"]) &
+            (df["possession_team_id"] != row["team_id"]) &
+            (df["type"].isin(functions.PRESS_EVENTS)) &
+            (df["x"].notna())
+        ]
+        return press["x"].values
+
+    x_a = get_press_x(row_a)
+    x_b = get_press_x(row_b)
+    mean_a = x_a.mean()
+    mean_b = x_b.mean()
+
+    plt.figure(figsize=(8, 6))
+    plt.hist(x_a, bins=bins, density=True, alpha=0.6, label=labels[0])
+    plt.hist(x_b, bins=bins, density=True, alpha=0.6, label=labels[1])
+
+    plt.axvline(60, color="k", linestyle="--", label="Opponent half")
+
+
+    plt.axvline(mean_a, color="blue", linestyle="-", linewidth=2)
+    plt.axvline(mean_b, color="orange", linestyle="-", linewidth=2)
+
+
+    plt.xlabel("x-position")
+    plt.ylabel("Density")
+    plt.title("Pressing height comparison")
+    plt.legend()
+    plt.tight_layout()
     plt.show()

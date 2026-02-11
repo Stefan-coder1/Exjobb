@@ -532,3 +532,108 @@ def calc_tempo(df, match=True):
     out["tempo"] = out["n_actions"] / out["possession_minutes"].replace(0, np.nan)
 
     return out
+
+
+PRESS_EVENTS = {
+    "Pressure",
+    "Interception",
+    "Duel",
+    "50/50",
+    "Block",
+    "Ball Recovery",
+    "Foul Committed",
+    # optional:
+    "Dribbled Past",
+}
+def calc_pressing_intensity(df_all_events: pd.DataFrame) -> pd.DataFrame:
+    """
+    Pressing intensity = number of pressing actions while defending
+    per minute of opponent possession.
+
+    Returns columns:
+      match_id, team_id, n_press_actions, opp_possession_minutes, press_intensity
+    """
+    df = df_all_events.copy()
+
+    # regular play only (recommended for stability)
+    df = df[df["play_pattern"].fillna("Regular Play") == "Regular Play"].copy()
+
+    # pressing actions
+    press = df[df["type"].isin(PRESS_EVENTS)].copy()
+
+    # only when opponent owns the possession
+    press = press[press["possession_team_id"].notna()].copy()
+    press = press[press["possession_team_id"] != press["team_id"]].copy()
+
+    grp = ["match_id", "team_id"]
+    counts = press.groupby(grp).size().reset_index(name="n_press_actions")
+
+    # opponent possession minutes = (match total - own possession)
+    poss = calc_possession_time(df, match=True)  # match_id, team_id, possession_seconds
+    poss["opp_possession_seconds"] = (
+        poss.groupby("match_id")["possession_seconds"].transform("sum") - poss["possession_seconds"]
+    )
+    poss["opp_possession_minutes"] = poss["opp_possession_seconds"] / 60.0
+
+    out = counts.merge(poss[["match_id", "team_id", "opp_possession_minutes"]], on=grp, how="left")
+    out["press_intensity"] = out["n_press_actions"] / out["opp_possession_minutes"].replace(0, np.nan)
+    return out
+def calc_pressing_height(
+    df_all_events: pd.DataFrame,
+    high_line_x: float = 60.0,
+    very_high_line_x: float = 80.0,
+    min_press_actions: int = 10,
+) -> pd.DataFrame:
+    """
+    Pressing height features from press-event x locations.
+
+    Returns columns:
+      match_id, team_id,
+      n_press_actions,
+      press_height_mean_x, press_height_median_x, press_height_std_x,
+      n_high, press_height_share_high,
+      n_very_high, press_height_share_very_high
+    """
+    df = df_all_events.copy()
+
+    # regular play only
+    df = df[df["play_pattern"].fillna("Regular Play") == "Regular Play"].copy()
+
+    press = df[df["type"].isin(PRESS_EVENTS)].copy()
+
+    # only when defending
+    press = press[press["possession_team_id"].notna()].copy()
+    press = press[press["possession_team_id"] != press["team_id"]].copy()
+
+    # require x
+    press = press[press["x"].notna()].copy()
+
+    grp = ["match_id", "team_id"]
+    press["is_high"] = press["x"] >= high_line_x
+    press["is_very_high"] = press["x"] >= very_high_line_x
+
+    agg = (
+        press.groupby(grp)
+             .agg(
+                 n_press_actions=("x", "size"),
+                 press_height_mean_x=("x", "mean"),
+                 press_height_median_x=("x", "median"),
+                 press_height_std_x=("x", "std"),
+                 n_high=("is_high", "sum"),
+                 n_very_high=("is_very_high", "sum"),
+             )
+             .reset_index()
+    )
+
+    agg["press_height_share_high"] = agg["n_high"] / agg["n_press_actions"].replace(0, np.nan)
+    agg["press_height_share_very_high"] = agg["n_very_high"] / agg["n_press_actions"].replace(0, np.nan)
+
+    # stability: if too few press actions, ratios + moments are noisy
+    mask = agg["n_press_actions"] < min_press_actions
+    cols_to_nan = [
+        "press_height_mean_x", "press_height_median_x", "press_height_std_x",
+        "press_height_share_high", "press_height_share_very_high"
+    ]
+    agg.loc[mask, cols_to_nan] = np.nan
+
+    return agg
