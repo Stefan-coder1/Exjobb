@@ -60,7 +60,9 @@ Key design principles:
   Degree of forward-oriented ball progression ✅ Done
   ![Example of directness](images/directness_example.png)
 
-- **Pass length**
+- **Pass length** ✅ Done
+How long is the average pass, and how much does the length vary?
+![Pass length](images/pass_length.png)
 
 - **Tempo**  
   Frequency of ball actions during possession phases ✅ Done
@@ -70,7 +72,7 @@ Key design principles:
 - **Pressing intensity**  ✅ Done
   Number of pressing actions per minute of opposition possession
   ![Pressing intensity](images/press_int.png)
-- **Pressing height**
+- **Pressing height** ✅ Done
 How high up the field does the team press? 
  ![Pressing height](images/press_height.png)
 

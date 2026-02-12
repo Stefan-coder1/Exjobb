@@ -67,14 +67,14 @@ def build_curve_fixed(df, match_id, team_id, max_poss_minutes=9.0):
 
 
 
-def plot_two_matches(df, a, b):
+def plot_two_matches(df, a, b, mode="tempo"):
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
     pitch = Pitch(pitch_type="statsbomb", line_zorder=2)
 
     for ax, row, title in zip(
         axes,
         [a, b],
-        ["Most tempo", "Least tempo"]
+        [f"Most {mode}", f"Least {mode}"]
     ):
         pitch.draw(ax=ax)
 
@@ -125,7 +125,7 @@ def plot_two_matches(df, a, b):
         )
         """
         ax.set_title(
-        f"{title}\nprogressive actions / all actions = {row['tempo']:.2f}"
+        f"{title}\nprogressive actions / all actions = {row[mode]:.2f}"
 )
         ax.legend(loc="upper left")
 

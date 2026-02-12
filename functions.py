@@ -203,9 +203,18 @@ def load_360_data(action_types=("Pass", "Carry", "Dribble"), three_sixty_only=Tr
 
             x, y = _xy(ev.get("location"))
             endx, endy = (np.nan, np.nan)
+            pass_subtype = None
+            pass_length = np.nan
+            pass_height = None
+            pass_body_part = None
 
             if t == "Pass":
                 endx, endy = _xy(ev.get("pass", {}).get("end_location"))
+                p = ev.get("pass", {}) or {}
+                pass_length = p.get("length", np.nan)
+                pass_subtype = (p.get("type", {}) or {}).get("name")  # e.g. "Goal Kick", "Corner", ...
+                pass_height = (p.get("height", {}) or {}).get("name")  # Ground Pass / High Pass / etc
+                pass_body_part = (p.get("body_part", {}) or {}).get("name")
             elif t == "Carry":
                 endx, endy = _xy(ev.get("carry", {}).get("end_location"))
             elif t == "Dribble":
@@ -232,6 +241,11 @@ def load_360_data(action_types=("Pass", "Carry", "Dribble"), three_sixty_only=Tr
                 "possession_team_id": ev.get("possession_team", {}).get("id"),
                 "counterpress": bool(ev.get("counterpress", False)),
                 "under_pressure": bool(ev.get("under_pressure", False)),
+                "pass_length": pass_length,
+                "pass_subtype": pass_subtype,
+                "pass_height": pass_height,
+                "pass_body_part": pass_body_part,
+
 
             })
 
