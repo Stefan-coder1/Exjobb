@@ -217,3 +217,41 @@ def plot_two_pressing_height_distributions(df, row_a, row_b, labels=None, bins=3
     plt.legend()
     plt.tight_layout()
     plt.show()
+def plot_pass_length_histograms(df, row_long, row_short, bins=25):
+
+    # Extract pass lengths directly from stored column
+    lengths_long = df[
+        (df["match_id"] == row_long["match_id"]) &
+        (df["team_id"] == row_long["team_id"]) &
+        (df["type"] == "Pass")
+    ]["pass_length"].dropna().values
+
+    lengths_short = df[
+        (df["match_id"] == row_short["match_id"]) &
+        (df["team_id"] == row_short["team_id"]) &
+        (df["type"] == "Pass")
+    ]["pass_length"].dropna().values
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+
+    axes[0].hist(lengths_long, bins=bins, density=True)
+    axes[0].axvline(row_long["mean_pass_length"], linestyle="--")
+    axes[0].set_title(
+        f"Longest passes\nMean={row_long['mean_pass_length']:.1f}, "
+        f"Std={row_long['std_pass_length']:.1f}"
+    )
+    axes[0].set_xlabel("Pass length (m)")
+
+    axes[1].hist(lengths_short, bins=bins, density=True)
+    axes[1].axvline(row_short["mean_pass_length"], linestyle="--")
+    axes[1].set_title(
+        f"Shortest passes\nMean={row_short['mean_pass_length']:.1f}, "
+        f"Std={row_short['std_pass_length']:.1f}"
+    )
+    axes[1].set_xlabel("Pass length (m)")
+
+    axes[0].set_ylabel("Density")
+
+    fig.suptitle("Pass Length Distribution Comparison")
+    plt.tight_layout()
+    plt.show()

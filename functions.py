@@ -651,3 +651,50 @@ def calc_pressing_height(
     agg.loc[mask, cols_to_nan] = np.nan
 
     return agg
+def calc_pass_length(
+    df: pd.DataFrame,
+    match: bool = True,
+    exclude_restarts: bool = True,
+) -> pd.DataFrame:
+    """
+    Pass length features (mean + std) using StatsBomb 'pass_length' extracted at load time.
+
+    Required columns:
+      - match_id
+      - team_id
+      - type == "Pass"
+      - pass_length
+    Optional:
+      - pass_subtype (for excluding restarts)
+
+    Returns:
+      match=True: match_id, team_id, n_passes, mean_pass_length, std_pass_length
+      match=False: team_id, n_passes, mean_pass_length, std_pass_length
+    """
+    df = df.copy()
+
+    if "match_id" in df.columns:
+        df["match_id"] = df["match_id"].astype("Int64")
+    if "team_id" in df.columns:
+        df["team_id"] = df["team_id"].astype("Int64")
+
+    passes = df[(df["type"] == "Pass") & (df["pass_length"].notna())].copy()
+
+    if exclude_restarts and "pass_subtype" in passes.columns:
+        exclude = {"Corner", "Free Kick", "Throw-in", "Goal Kick", "Kick Off"}
+        passes = passes[~passes["pass_subtype"].isin(exclude)].copy()
+
+    grp = ["match_id", "team_id"] if match else ["team_id"]
+
+    out = (
+        passes.groupby(grp)
+              .agg(
+                  n_passes=("pass_length", "size"),
+                  mean_pass_length=("pass_length", "mean"),
+                  std_pass_length=("pass_length", "std"),
+              )
+              .reset_index()
+    )
+
+    out["team_id"] = out["team_id"].astype("Int64")
+    return out
