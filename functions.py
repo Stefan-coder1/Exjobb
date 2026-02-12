@@ -290,47 +290,23 @@ def plot_team_zone_shares(team_zone_share, team_id, title=None, annotate=True):
     ax.set_title(title)
     plt.show()
 
-
 def get_progressive_actions(df, p=0.2, dx_min=8.0):
-    """
-    Identify progressive actions based on two criteria:
-    1) The action must advance the ball by at least p * remaining distance to the opponent's goal.
-    2) The action must advance the ball by at least a fixed minimum distance (dx_min).
-    
-    Parameters:
-    - df: DataFrame containing actions, specifically passes with 'x' and 'endx' coordinates.
-    - p: Proportion of remaining distance to consider for progressiveness.
-    - dx_min: Fixed minimum distance for progressiveness.
-    
-    Returns:
-    - DataFrame with additional columns indicating progressiveness and margin.
-
-    """
     df = df.copy()
     df = df[df["endx"].notna() & df["x"].notna()]
 
-    # forward displacement
     df["dx"] = df["endx"] - df["x"]
     df["remaining"] = 120 - df["x"]
-
-    # only forward actions at all
-    df = df[df["dx"] > 0].copy()
-
     df["thr"] = p * df["remaining"]
 
+    # progressive only if forward + clears both thresholds
     df["is_progressive"] = (
+        (df["dx"] > 0) &
         (df["dx"] >= df["thr"]) &
         (df["dx"] >= dx_min)
     )
 
-    df["margin"] = df["dx"] - df["thr"]
-
-    # diagnostics (useful for plotting / sanity checks)
-    df["slack_rel"] = df["dx"] - df["thr"]
-    df["slack_abs"] = df["dx"] - dx_min
-    df["slack"] = df[["slack_rel", "slack_abs"]].min(axis=1)
-
     return df
+
 
 def calc_width(df2, match=True):
     """Calculate the average width of passes for each team in each match or overall.
