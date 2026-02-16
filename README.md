@@ -84,13 +84,11 @@ How high up the field does the team press?
 
 - **Final third entries**
 
-- **Ball speed**
-
-- **Set pieces** *(categorical context)*
+- **Set pieces** *(For later)*
 
 ---
 
-## Pitch Zoning
+## Pitch Zoning (might scrap)
 
 A **custom pitch zoning system** is used instead of most common positionism zones.
 

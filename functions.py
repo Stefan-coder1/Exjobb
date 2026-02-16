@@ -145,6 +145,19 @@ def _xy(loc):
     if not loc or len(loc) < 2:
         return (np.nan, np.nan)
     return (float(loc[0]), float(loc[1]))
+def add_t_abs_seconds(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    df["t_abs_sec"] = (
+        pd.to_numeric(df["minute"], errors="coerce") * 60
+        + pd.to_numeric(df["second"], errors="coerce")
+    )
+
+    ts = pd.to_timedelta(df["timestamp"], errors="coerce")
+    frac = ts.dt.components["milliseconds"].fillna(0).astype(float) / 1000.0
+    df["t_abs_sec"] = df["t_abs_sec"] + frac
+
+    return df
 
 def load_360_data(action_types=("Pass", "Carry", "Dribble"), three_sixty_only=True) -> pd.DataFrame:
     load_dotenv()
@@ -381,34 +394,34 @@ def calc_directness(df, match=True):
     return directness
 
 
-###NEW
+###NEWimport numpy as np
+import pandas as pd
 import numpy as np
 import pandas as pd
 
-def calc_possession_time(df, match=True):
+def calc_possession_time(df, match=True, max_gap_s=10.0):
     """
-    Possession time (seconds) per team, computed from StatsBomb possession segments.
+    Possession time (seconds) per team from StatsBomb events.
 
-    Required columns:
-      - match_id
-      - possession
-      - timestamp   (string like '00:00:06.293')
-      - duration    (seconds; may be missing -> treated as 0)
-      - possession_team_id  (recommended)
-        OR possession_team (object) if you still have nested dicts
+    Counts:
+      - the event's own duration
+      - plus a capped gap until the next event starts (to approximate continuous possession)
+    This avoids the (max-min) span explosion and handles stoppages via gap capping.
 
-    Notes:
-      - Uses millisecond 'timestamp' rather than minute/second.
-      - Duration is added to the final event in a possession to avoid undercounting.
+    max_gap_s: maximum between-event gap to count as possession (e.g. 8–15 seconds).
     """
     df = df.copy()
 
-    # enforce integer IDs early
-    for c in ["match_id"]:
-        if c in df.columns:
-            df[c] = df[c].astype("Int64")
+    # --- Required columns
+    if "timestamp" not in df.columns or "period" not in df.columns:
+        raise ValueError("Need 'timestamp' and 'period' columns.")
+    if "match_id" not in df.columns:
+        raise ValueError("Need 'match_id' column.")
 
-    # If you don't already have possession_team_id, try to derive it from nested dict
+    # --- IDs
+    df["match_id"] = df["match_id"].astype("Int64")
+
+    # possession team id
     if "possession_team_id" not in df.columns:
         if "possession_team" in df.columns:
             df["possession_team_id"] = df["possession_team"].apply(
@@ -416,53 +429,63 @@ def calc_possession_time(df, match=True):
             )
         else:
             raise ValueError("Need possession_team_id (or possession_team dict) in df.")
-
     df["possession_team_id"] = df["possession_team_id"].astype("Int64")
 
-    # Parse timestamp to timedelta (supports milliseconds)
-    # Example: '00:00:06.293' -> Timedelta
-    df["t"] = pd.to_timedelta(df["timestamp"])
-
-    # duration may be missing
+    # duration
     if "duration" not in df.columns:
         df["duration"] = 0.0
     df["duration"] = pd.to_numeric(df["duration"], errors="coerce").fillna(0.0)
+    df["duration"] = df["duration"].clip(lower=0.0)
 
-    # end time for each event
-    df["t_end"] = df["t"] + pd.to_timedelta(df["duration"], unit="s")
+    # --- timestamp within period -> seconds
+    ts = df["timestamp"]
+    if np.issubdtype(ts.dtype, np.datetime64):
+        ts = ts.dt.strftime("%H:%M:%S.%f").str.slice(0, 12)
 
-    # Possession segments: one row per possession
-    seg_cols = ["match_id", "possession"]
-    seg = (
-        df.groupby(seg_cols, as_index=False)
-          .agg(
-              possession_team_id=("possession_team_id", "first"),
-              start=("t", "min"),
-              end=("t_end", "max"),
-          )
+    t_start = pd.to_timedelta(ts.astype(str), errors="coerce").dt.total_seconds()
+    t_start = t_start.fillna(0.0)
+
+    t_end = t_start + df["duration"].to_numpy()
+
+    # --- dynamic per-period offsets per match (includes stoppage)
+    per_len = (
+        pd.DataFrame({"match_id": df["match_id"], "period": df["period"], "t_end": t_end})
+        .groupby(["match_id", "period"], as_index=False)["t_end"].max()
+        .sort_values(["match_id", "period"])
     )
+    per_len["offset_sec"] = per_len.groupby("match_id")["t_end"].shift(1).fillna(0.0)
+    per_len["offset_sec"] = per_len.groupby("match_id")["offset_sec"].cumsum()
 
-    seg["possession_seconds"] = (seg["end"] - seg["start"]).dt.total_seconds().clip(lower=0)
+    df = df.merge(per_len[["match_id", "period", "offset_sec"]],
+                  on=["match_id", "period"], how="left")
 
-    # Aggregate to team (match-level or overall)
+    df["t_abs_start"] = t_start + df["offset_sec"].fillna(0.0)
+    df["t_abs_end"]   = t_end   + df["offset_sec"].fillna(0.0)
+
+    # --- Sort before taking next-event deltas
+    df = df.sort_values(["match_id", "t_abs_start"]).reset_index(drop=True)
+
+    # next event start within match
+    df["t_next_start"] = df.groupby("match_id")["t_abs_start"].shift(-1)
+
+    # gap AFTER current event ends until next event starts
+    gap = (df["t_next_start"] - df["t_abs_end"]).clip(lower=0.0)
+    gap = gap.clip(upper=max_gap_s).fillna(0.0)
+
+    # possession increment = event duration + capped gap
+    poss_inc = df["duration"].to_numpy() + gap.to_numpy()
+    df["poss_inc"] = poss_inc
+
+    # aggregate to team
     if match:
-        out = (
-            seg.groupby(["match_id", "possession_team_id"])["possession_seconds"]
-               .sum()
-               .reset_index()
-               .rename(columns={"possession_team_id": "team_id"})
-        )
+        out = (df.groupby(["match_id", "possession_team_id"], as_index=False)["poss_inc"].sum()
+                 .rename(columns={"possession_team_id": "team_id", "poss_inc": "possession_seconds"}))
     else:
-        out = (
-            seg.groupby(["possession_team_id"])["possession_seconds"]
-               .sum()
-               .reset_index()
-               .rename(columns={"possession_team_id": "team_id"})
-        )
+        out = (df.groupby(["possession_team_id"], as_index=False)["poss_inc"].sum()
+                 .rename(columns={"possession_team_id": "team_id", "poss_inc": "possession_seconds"}))
 
     out["team_id"] = out["team_id"].astype("Int64")
     return out
-
 
 
 def calc_possession_share(df):
