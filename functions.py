@@ -473,7 +473,7 @@ def calc_possession_time(df, match=True, max_gap_s=10.0):
     gap = gap.clip(upper=max_gap_s).fillna(0.0)
 
     # possession increment = event duration + capped gap
-    poss_inc = df["duration"].to_numpy() + gap.to_numpy()
+    poss_inc =   df["duration"].to_numpy() #gap.to_numpy() +
     df["poss_inc"] = poss_inc
 
     # aggregate to team
@@ -569,7 +569,7 @@ def calc_pressing_intensity(df_all_events: pd.DataFrame) -> pd.DataFrame:
     df = df_all_events.copy()
 
     # regular play only (recommended for stability)
-    df = df[df["play_pattern"].fillna("Regular Play") == "Regular Play"].copy()
+    #df = df[df["play_pattern"].fillna("Regular Play") == "Regular Play"].copy()
 
     # pressing actions
     press = df[df["type"].isin(PRESS_EVENTS)].copy()
