@@ -232,37 +232,94 @@ class SeqCVAE(nn.Module):
             "term": self.h_term(out),
             "dxy":  dxy,
         }
-    def forward(self, x, c, zone_code, min_code, xy0_t, xy1_t, lengths):
+    
+
+    def forward(self, x, c, zone_code, min_code, xy0_t, xy1_t, lengths, ss_prob=0.0, ss_temp=1.0):
         cond = self.make_cond(c, zone_code, min_code)
         cond = torch.nan_to_num(cond, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # target (may contain NaNs – that's OK)
-        dxy_true = xy1_t - xy0_t
-
-        # IMPORTANT: clean for model inputs
+        dxy_true  = xy1_t - xy0_t
         dxy_clean = torch.nan_to_num(dxy_true, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # encoder: do NOT take dxy_true
         mu, logv = self.encode(x, cond, lengths, dxy_true=None)
         z = self.reparam(mu, logv)
 
-        # teacher forcing x
+        B, T, _ = x.shape
+        device = x.device
+        lengths_d = lengths.to(device)
+
+        # teacher-forced shifted inputs
         x_in = x.clone()
         x_in[:, 1:, :] = x[:, :-1, :]
-        x_in[:, 0, :] = 0
+        x_in[:, 0, :]  = 0
 
-        # teacher forcing dxy (must be finite)
         dxy_in = dxy_clean.clone()
         dxy_in[:, 1:, :] = dxy_clean[:, :-1, :]
-        dxy_in[:, 0, :] = 0.0
+        dxy_in[:, 0, :]  = 0.0
 
-        # ez for dxy conditioning
         _, _, _, ez_t, _, _, _ = x.unbind(dim=-1)
+        ez_for_dxy = torch.zeros_like(ez_t)
+        ez_for_dxy[:, 1:] = ez_t[:, :-1]
+        ez_for_dxy[:, 0]  = 0
 
-        logits = self.decode(x_in=x_in, z=z, cond=cond, dxy_in=dxy_in, ez_for_dxy=ez_t)
-        assert torch.isfinite(cond).all()
-        assert torch.isfinite(dxy_in).all()
-        return logits, mu, logv#, dxy_true  # return dxy_true (with NaNs) for loss masking
+        # ---- Pass 1: pure teacher forcing
+        logits_tf = self.decode(x_in=x_in, z=z, cond=cond, dxy_in=dxy_in, ez_for_dxy=ez_for_dxy)
+
+        if ss_prob <= 0.0:
+            return logits_tf, mu, logv
+
+        # ---- Build mixed inputs for Pass 2
+        # We will overwrite the "previous step" positions 1..T-1
+        # For each timestep i (1..T-1), x_in[:, i] represents tokens from step i-1.
+        # So we use predictions from step i-1.
+
+        # mask of positions to overwrite: [B, T]
+        t_idx = torch.arange(T, device=device).view(1, T).expand(B, T)
+        valid_pos = (t_idx < lengths_d.view(B, 1)) & (t_idx > 0)   # only 1..len-1
+        use_model = (torch.rand(B, T, device=device) < ss_prob) & valid_pos
+        
+
+        # get predicted tokens from previous step (shifted by +1 in time)
+        def argmax_shift(logits_key):
+            pred = logits_tf[logits_key].argmax(dim=-1)  # [B,T]
+            pred_shift = torch.zeros_like(pred)
+            pred_shift[:, 1:] = pred[:, :-1]
+            return pred_shift
+
+        pred_role = argmax_shift("role")
+        pred_type = argmax_shift("type")
+        pred_sz   = argmax_shift("sz")
+        pred_ez   = argmax_shift("ez")
+        pred_out  = argmax_shift("out")
+        pred_dt   = argmax_shift("dt")
+        pred_term = argmax_shift("term")
+
+        # overwrite selected positions in x_in
+        x_in_m = x_in.clone()
+        x_in_m[..., 0] = torch.where(use_model, pred_role, x_in_m[..., 0])
+        x_in_m[..., 1] = torch.where(use_model, pred_type, x_in_m[..., 1])
+        x_in_m[..., 2] = torch.where(use_model, pred_sz,   x_in_m[..., 2])
+        x_in_m[..., 3] = torch.where(use_model, pred_ez,   x_in_m[..., 3])
+        x_in_m[..., 4] = torch.where(use_model, pred_out,  x_in_m[..., 4])
+        x_in_m[..., 5] = torch.where(use_model, pred_dt,   x_in_m[..., 5])
+        x_in_m[..., 6] = torch.where(use_model, pred_term, x_in_m[..., 6])
+
+        # overwrite dxy_in similarly (shifted)
+        dxy_pred = logits_tf["dxy"].detach()               # [B,T,2]
+        dxy_shift = torch.zeros_like(dxy_pred)
+        dxy_shift[:, 1:, :] = dxy_pred[:, :-1, :]
+
+        dxy_in_m = dxy_in.clone()
+        dxy_in_m = torch.where(use_model.unsqueeze(-1), dxy_shift, dxy_in_m)
+
+        # overwrite ez_for_dxy (shifted predicted ez)
+        ez_for_dxy_m = ez_for_dxy.clone()
+        ez_for_dxy_m = torch.where(use_model, pred_ez, ez_for_dxy_m)
+
+        # ---- Pass 2: decode on mixed history (this is the one you backprop through)
+        logits = self.decode(x_in=x_in_m, z=z, cond=cond, dxy_in=dxy_in_m, ez_for_dxy=ez_for_dxy_m)
+
+        return logits, mu, logv
 
 def masked_l1(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """
@@ -310,6 +367,41 @@ def bbox_outside_penalty(xy, bb):
     px = F.relu(x0 - x) + F.relu(x - x1)
     py = F.relu(y0 - y) + F.relu(y - y1)
     return px + py
+
+
+
+
+def soft_zone_dist_from_bboxes(xy_bt2: torch.Tensor, ez_bb_k4: torch.Tensor, alpha: float = 2.0, eps: float = 1e-8):
+    """
+    xy_bt2: [B,T,2]
+    ez_bb_k4: [K,4] with x0,x1,y0,y1 (aligned with ez class ids)
+    returns q: [B,T,K] where q sums to 1 over K
+    """
+    B, T, _ = xy_bt2.shape
+    K = ez_bb_k4.shape[0]
+    device = xy_bt2.device
+
+    xy = xy_bt2.reshape(B * T, 2)                          # [BT,2]
+    bb = ez_bb_k4.to(device).unsqueeze(0).expand(B * T, K, 4)  # [BT,K,4]
+
+    x = xy[:, 0].unsqueeze(-1)  # [BT,1]
+    y = xy[:, 1].unsqueeze(-1)  # [BT,1]
+
+    x0 = bb[..., 0]  # [BT,K]
+    x1 = bb[..., 1]
+    y0 = bb[..., 2]
+    y1 = bb[..., 3]
+
+    # outside penalty per zone (same as your bbox_outside_penalty but batched over K)
+    px = F.relu(x0 - x) + F.relu(x - x1)
+    py = F.relu(y0 - y) + F.relu(y - y1)
+    pen = px + py  # [BT,K]
+
+    # turn penalty into a soft membership score
+    scores = torch.exp(-alpha * pen)  # [BT,K]
+    q = (scores + eps) / (scores.sum(dim=-1, keepdim=True) + eps * K)
+    return q.view(B, T, K)
+
 def compute_loss(
     logits: dict,
     x: torch.Tensor,
@@ -387,6 +479,16 @@ def compute_loss(
 
         exp_pen = (p_ez * pen_all).sum(dim=-1)      # [B,T]
         loss_soft = (exp_pen * dxy_mask).sum() / (dxy_mask.sum() + 1e-6)
+        p_ez = F.softmax(logits["ez"], dim=-1)            # [B,T,K]
+        xy1_hat = xy0_t + logits["dxy"]                   # [B,T,2]
+        q_xy = soft_zone_dist_from_bboxes(xy1_hat, ez_bb, alpha=2.0)
+
+        eps = 1e-8
+        kl_qp = (q_xy.clamp_min(eps) * (q_xy.clamp_min(eps).log() - p_ez.clamp_min(eps).log())).sum(dim=-1)  # [B,T]
+
+        loss_align = (kl_qp * dxy_mask).sum() / dxy_mask.sum().clamp_min(1.0)
+
+        
     
 
 
@@ -420,7 +522,7 @@ def compute_loss(
 
 
 
-    total = loss_main + loss_term + beta*loss_kld + lambda_dxy*loss_dxy + lambda_zone*loss_zone + lambda_soft*loss_soft
+    total = loss_main + loss_term + beta*loss_kld + lambda_dxy*loss_dxy + lambda_zone*loss_zone + lambda_soft*loss_soft + loss_align*lambda_soft
     return total, {
         "main": loss_main.detach(),
         "term": loss_term.detach(),
@@ -428,6 +530,7 @@ def compute_loss(
         "zone": loss_zone.detach(),
         "kld": loss_kld.detach(),
         "soft": lambda_soft*loss_soft.detach(),
+        "align": lambda_soft*loss_align.detach(),
 
     }
     #--- Example training loop skeleton (minimal) ---
@@ -1074,7 +1177,8 @@ def eval_one_epoch(
         ez_bb = ez_bb.to(device)
 
     total = 0.0
-    parts_sum = {"main": 0.0, "term": 0.0, "kld": 0.0, "dxy": 0.0, "zone": 0.0, "soft": 0.0}
+    
+    parts_sum = {"main": 0.0, "term": 0.0, "kld": 0.0, "dxy": 0.0, "zone": 0.0, "soft": 0.0, "align": 0.0}
     n = 0
 
     for batch in loader:
