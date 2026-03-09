@@ -123,6 +123,7 @@ class SeqCVAE(nn.Module):
 
         self.c_eff_dim = cdim + zone_emb_dim + min_emb_dim  
         self.dxy_emb = nn.Linear(2, emb)   # or 16, or whatever you like
+        self.xy_emb = nn.Linear(2, emb)
 # and update decoder input dimension:
 
         
@@ -139,7 +140,7 @@ class SeqCVAE(nn.Module):
 
         # decoder (teacher forcing, un-packed is fine)
         
-        self.dec_rnn = nn.GRU(in_dim + self.c_eff_dim + zdim + emb, hidden, batch_first=True)
+        self.dec_rnn = nn.GRU(in_dim + self.c_eff_dim + zdim + emb + emb, hidden, batch_first=True)
 
         # heads
 
@@ -201,16 +202,17 @@ class SeqCVAE(nn.Module):
         std = torch.exp(0.5 * logv)
         eps = torch.randn_like(std)
         return mu + eps * std
-    def decode(self, x_in, z, cond, dxy_in, ez_for_dxy=None):
+    def decode(self, x_in, z, cond, dxy_in, xy_in, ez_for_dxy=None):
         B, T, _ = x_in.shape
 
         e = self.embed_step(x_in)                    # [B,T,in_dim]
         d = self.dxy_emb(dxy_in)                     # [B,T,emb]
+        xy = self.xy_emb(xy_in)                      # [B,T,emb]
 
         cond_rep = cond.unsqueeze(1).expand(B, T, cond.shape[-1])
         z_rep    = z.unsqueeze(1).expand(B, T, z.shape[-1])
 
-        inp = torch.cat([e, d, cond_rep, z_rep], dim=-1)
+        inp = torch.cat([e, d, xy, cond_rep, z_rep], dim=-1)
 
         out, _ = self.dec_rnn(inp)
 
@@ -240,6 +242,12 @@ class SeqCVAE(nn.Module):
 
         dxy_true  = xy1_t - xy0_t
         dxy_clean = torch.nan_to_num(dxy_true, nan=0.0, posinf=0.0, neginf=0.0)
+        xy0_clean = torch.nan_to_num(xy0_t, nan=0.0, posinf=0.0, neginf=0.0)
+        xy1_clean = torch.nan_to_num(xy1_t, nan=0.0, posinf=0.0, neginf=0.0)
+
+        xy_in = xy1_clean.clone()
+        xy_in[:, 1:, :] = xy1_clean[:, :-1, :]   # previous true end xy
+        xy_in[:, 0, :]  = xy0_clean[:, 0, :]     # possession start xy
 
         mu, logv = self.encode(x, cond, lengths, dxy_true=None)
         z = self.reparam(mu, logv)
@@ -263,7 +271,7 @@ class SeqCVAE(nn.Module):
         ez_for_dxy[:, 0]  = 0
 
         # ---- Pass 1: pure teacher forcing
-        logits_tf = self.decode(x_in=x_in, z=z, cond=cond, dxy_in=dxy_in, ez_for_dxy=ez_for_dxy)
+        logits_tf = self.decode(x_in=x_in, z=z, cond=cond, dxy_in=dxy_in, xy_in=xy_in, ez_for_dxy=ez_for_dxy)
 
         if ss_prob <= 0.0:
             return logits_tf, mu, logv
@@ -315,9 +323,18 @@ class SeqCVAE(nn.Module):
         # overwrite ez_for_dxy (shifted predicted ez)
         ez_for_dxy_m = ez_for_dxy.clone()
         ez_for_dxy_m = torch.where(use_model, pred_ez, ez_for_dxy_m)
+        # predicted end positions from pass 1
+        xy1_pred = (xy0_clean + dxy_pred).detach()   # [B,T,2]
+
+        # shifted version so step t gets previous predicted end xy from step t-1
+        xy_shift = xy_in.clone()
+        xy_shift[:, 1:, :] = xy1_pred[:, :-1, :]
+        xy_shift[:, 0, :]  = xy0_clean[:, 0, :]   # keep real possession start
+        xy_in_m = xy_in.clone()
+        xy_in_m = torch.where(use_model.unsqueeze(-1), xy_shift, xy_in_m)
 
         # ---- Pass 2: decode on mixed history (this is the one you backprop through)
-        logits = self.decode(x_in=x_in_m, z=z, cond=cond, dxy_in=dxy_in_m, ez_for_dxy=ez_for_dxy_m)
+        logits = self.decode(x_in=x_in_m, z=z, cond=cond, dxy_in=dxy_in_m,xy_in=xy_in_m, ez_for_dxy=ez_for_dxy_m)
 
         return logits, mu, logv
 
@@ -442,7 +459,8 @@ def compute_loss(
 
     # base mask: pass/carry and non-pad
     # True displacement
-    dxy_true = xy1_t - xy0_t
+    
+    loss_align = torch.tensor(0.0, device=x.device)
 
     # Only Pass/Carry
     is_move = ((type_t == type_pass_id) | (type_t == type_carry_id))
@@ -1097,6 +1115,10 @@ def build_possession_sequences(df, max_T=40):
                 else:
                     # if no end_location, keep equal start (or 0,0) — but we'll mask these in loss anyway
                     x1, y1 = x0, y0
+            x0 /= 120.0
+            y0 /= 80.0
+            x1 /= 120.0
+            y1 /= 80.0
 
             dx, dy = (x1 - x0), (y1 - y0)
             steps.append({
@@ -1372,15 +1394,14 @@ def validate_dxy_meters(
 
         if m.sum().item() == 0:
             continue
+        pred = logits["dxy"][m]           # normalized
+        true = (xy1_t - xy0_t)[m]         # normalized
 
-        pred = logits["dxy"][m]                 # [N,2] SB units
-        true = (xy1_t - xy0_t)[m]               # [N,2] SB units (finite by m)
+        diff = pred - true   # normalized
 
-        pred_m = sb_dxy_to_meters(pred)
-        true_m = sb_dxy_to_meters(true)
-
-        diff = pred_m - true_m
-        dist = torch.sqrt((diff ** 2).sum(dim=-1))  # [N]
+        dx_m = diff[:, 0] * 105.0
+        dy_m = diff[:, 1] * 68.0
+        dist = torch.sqrt(dx_m**2 + dy_m**2)
         dists.append(dist.detach().cpu())
 
     if len(dists) == 0:
