@@ -1,5 +1,6 @@
 
 import numpy as np
+from zmq import device
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -79,8 +80,48 @@ def masked_ce(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) ->
     loss = F.cross_entropy(logits.reshape(B * T, V), target.reshape(B * T), reduction="none")
     loss = loss.reshape(B, T) * mask
     return loss.sum() / (mask.sum() + 1e-8)
+def masked_ce_with_type_constraints(logits, target, type_ids, mask, valid_outcome_mask):
+    B, T, V = logits.shape
+    allowed = valid_outcome_mask[type_ids]   # [B,T,V]
+    neg_inf = torch.finfo(logits.dtype).min
+    logits_masked = logits.masked_fill(~allowed, neg_inf)
 
+    loss = F.cross_entropy(
+        logits_masked.reshape(B * T, V),
+        target.reshape(B * T),
+        reduction="none"
+    ).reshape(B, T)
 
+    loss = loss * mask
+    return loss.sum() / (mask.sum() + 1e-8)
+def build_valid_outcome_mask(type2id, out2id):
+    n_types = max(type2id.values()) + 1
+    n_out = max(out2id.values()) + 1
+    m = torch.zeros((n_types, n_out), dtype=torch.bool)
+
+    def allow(type_name, outs):
+        if type_name not in type2id:
+            return
+        tid = type2id[type_name]
+        for o in outs:
+            if o in out2id:
+                m[tid, out2id[o]] = True
+
+    allow("Pass", ["Complete", "Incomplete"])
+    allow("Shot", ["Goal", "Saved", "Blocked", "Off T", "Wayward", "Post", "Saved To Post", "Saved Off T"])
+    allow("Carry", ["NA"])
+    allow("Block", ["NA"])
+    allow("Interception", ["NA"])
+    allow("END", ["NA"])
+    allow("PAD", ["NA"])
+
+    # fallback: if a row has nothing allowed, allow NA
+    if "NA" in out2id:
+        na_id = out2id["NA"]
+        empty_rows = ~m.any(dim=1)
+        m[empty_rows, na_id] = True
+
+    return m
 def kld(mu: torch.Tensor, logv: torch.Tensor) -> torch.Tensor:
     return -0.5 * torch.mean(1 + logv - mu.pow(2) - logv.exp())
 
@@ -438,6 +479,7 @@ def compute_loss(
     ez_bb: torch.Tensor | None = None,
     ez_pad_id: int | None = None,
     ez_na_id: int | None = None,
+    valid_outcome_mask=None,
 ):
     role_t, type_t, sz_t, ez_t, out_t, dt_t, term_t = x.unbind(dim=-1)
 
@@ -446,7 +488,9 @@ def compute_loss(
         masked_ce(logits["type"], type_t, mask) +
         masked_ce(logits["sz"],   sz_t,   mask) +
         masked_ce(logits["ez"],   ez_t,   mask) +
-        masked_ce(logits["out"],  out_t,  mask) +
+        masked_ce_with_type_constraints(
+            logits["out"], out_t, type_t, mask, valid_outcome_mask
+        ) +
         masked_ce(logits["dt"],   dt_t,   mask)
     )
     end_mask = (type_t == type_end_id).float() * mask
@@ -568,6 +612,7 @@ def train_one_epoch(
     lambda_zone=0.2,
     ez_bb=None,
     ez2id=None,
+    out2id=None,
 ):
     model.train()
 
@@ -618,6 +663,8 @@ def train_one_epoch(
         if not torch.isfinite(dxy_clean).all():
             raise RuntimeError("dxy_clean is still non-finite")
         logits, mu, logv = model(x, c, zone_code, min_code, xy0_t, xy1_t, lengths)
+        valid_outcome_mask = build_valid_outcome_mask(type2id, out2id)
+        valid_outcome_mask = valid_outcome_mask.to(device)
 
         # ---- loss ----
         loss, parts = compute_loss(
@@ -639,6 +686,7 @@ def train_one_epoch(
             ez_bb=ez_bb,
             ez_pad_id=ez_pad_id,
             ez_na_id=ez_na_id,
+            valid_outcome_mask=valid_outcome_mask
         )
 
         optimizer.zero_grad(set_to_none=True)
@@ -1115,10 +1163,7 @@ def build_possession_sequences(df, max_T=40):
                 else:
                     # if no end_location, keep equal start (or 0,0) — but we'll mask these in loss anyway
                     x1, y1 = x0, y0
-            x0 /= 120.0
-            y0 /= 80.0
-            x1 /= 120.0
-            y1 /= 80.0
+   
 
             dx, dy = (x1 - x0), (y1 - y0)
             steps.append({
@@ -1185,8 +1230,11 @@ def eval_one_epoch(
     lambda_zone=0.2,
     ez_bb=None,
     ez2id=None,
+    out2id=None,
 ):
     model.eval()
+    valid_outcome_mask = build_valid_outcome_mask(type2id, out2id)
+    valid_outcome_mask = valid_outcome_mask.to(device)
 
     END_ID   = type2id["END"]
     PASS_ID  = type2id["Pass"]
@@ -1242,6 +1290,7 @@ def eval_one_epoch(
             ez_bb=ez_bb,
             ez_pad_id=ez_pad_id,
             ez_na_id=ez_na_id,
+            valid_outcome_mask=valid_outcome_mask
         )
 
         total += float(loss.item())
@@ -1394,13 +1443,13 @@ def validate_dxy_meters(
 
         if m.sum().item() == 0:
             continue
-        pred = logits["dxy"][m]           # normalized
-        true = (xy1_t - xy0_t)[m]         # normalized
+        pred = logits["dxy"][m]          
+        true = (xy1_t - xy0_t)[m]        
 
-        diff = pred - true   # normalized
+        diff = pred - true   
 
-        dx_m = diff[:, 0] * 105.0
-        dy_m = diff[:, 1] * 68.0
+        dx_m = diff[:, 0] 
+        dy_m = diff[:, 1] 
         dist = torch.sqrt(dx_m**2 + dy_m**2)
         dists.append(dist.detach().cpu())
 
