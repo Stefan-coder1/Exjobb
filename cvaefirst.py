@@ -83,6 +83,19 @@ def masked_ce(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) ->
 def masked_ce_with_type_constraints(logits, target, type_ids, mask, valid_outcome_mask):
     B, T, V = logits.shape
     allowed = valid_outcome_mask[type_ids]   # [B,T,V]
+
+    gold_allowed = allowed.gather(-1, target.unsqueeze(-1)).squeeze(-1)  # [B,T]
+    bad = mask.bool() & (~gold_allowed)
+    if bad.any():
+        bad_idx = bad.nonzero(as_tuple=False)[:10]
+        print("Disallowed gold targets:")
+        for b, t in bad_idx:
+            print(
+                "type_id =", int(type_ids[b, t]),
+                "target_id =", int(target[b, t]),
+            )
+        raise RuntimeError("Gold target masked out by valid_outcome_mask")
+
     neg_inf = torch.finfo(logits.dtype).min
     logits_masked = logits.masked_fill(~allowed, neg_inf)
 
@@ -94,34 +107,7 @@ def masked_ce_with_type_constraints(logits, target, type_ids, mask, valid_outcom
 
     loss = loss * mask
     return loss.sum() / (mask.sum() + 1e-8)
-def build_valid_outcome_mask(type2id, out2id):
-    n_types = max(type2id.values()) + 1
-    n_out = max(out2id.values()) + 1
-    m = torch.zeros((n_types, n_out), dtype=torch.bool)
 
-    def allow(type_name, outs):
-        if type_name not in type2id:
-            return
-        tid = type2id[type_name]
-        for o in outs:
-            if o in out2id:
-                m[tid, out2id[o]] = True
-
-    allow("Pass", ["Complete", "Incomplete"])
-    allow("Shot", ["Goal", "Saved", "Blocked", "Off T", "Wayward", "Post", "Saved To Post", "Saved Off T"])
-    allow("Carry", ["NA"])
-    allow("Block", ["NA"])
-    allow("Interception", ["NA"])
-    allow("END", ["NA"])
-    allow("PAD", ["NA"])
-
-    # fallback: if a row has nothing allowed, allow NA
-    if "NA" in out2id:
-        na_id = out2id["NA"]
-        empty_rows = ~m.any(dim=1)
-        m[empty_rows, na_id] = True
-
-    return m
 def kld(mu: torch.Tensor, logv: torch.Tensor) -> torch.Tensor:
     return -0.5 * torch.mean(1 + logv - mu.pow(2) - logv.exp())
 
@@ -488,9 +474,8 @@ def compute_loss(
         masked_ce(logits["type"], type_t, mask) +
         masked_ce(logits["sz"],   sz_t,   mask) +
         masked_ce(logits["ez"],   ez_t,   mask) +
-        masked_ce_with_type_constraints(
-            logits["out"], out_t, type_t, mask, valid_outcome_mask
-        ) +
+        masked_ce_with_type_constraints(logits["out"], out_t, type_t, mask, valid_outcome_mask) +
+        #masked_ce(logits["out"],  out_t,  mask) + #ANTINGEN DENNA ELLER ASNDRA
         masked_ce(logits["dt"],   dt_t,   mask)
     )
     end_mask = (type_t == type_end_id).float() * mask
@@ -613,6 +598,8 @@ def train_one_epoch(
     ez_bb=None,
     ez2id=None,
     out2id=None,
+    valid_outcome_mask=None,
+    ss_prob=0.0,
 ):
     model.train()
 
@@ -648,6 +635,7 @@ def train_one_epoch(
         min_code  = min_code.to(device)
         mask      = mask.to(device)
         lengths   = lengths.to(device)
+        valid_outcome_mask = valid_outcome_mask.to(device)
 
 
         # Your model.forward must match this signature.
@@ -662,9 +650,10 @@ def train_one_epoch(
         dxy_clean = torch.nan_to_num(dxy_true, nan=0.0, posinf=0.0, neginf=0.0)
         if not torch.isfinite(dxy_clean).all():
             raise RuntimeError("dxy_clean is still non-finite")
-        logits, mu, logv = model(x, c, zone_code, min_code, xy0_t, xy1_t, lengths)
-        valid_outcome_mask = build_valid_outcome_mask(type2id, out2id)
-        valid_outcome_mask = valid_outcome_mask.to(device)
+        logits, mu, logv = model(x, c, zone_code, min_code, xy0_t, xy1_t, lengths, ss_prob=ss_prob)
+
+        
+        
 
         # ---- loss ----
         loss, parts = compute_loss(
@@ -1231,9 +1220,10 @@ def eval_one_epoch(
     ez_bb=None,
     ez2id=None,
     out2id=None,
+    valid_outcome_mask=None,
 ):
     model.eval()
-    valid_outcome_mask = build_valid_outcome_mask(type2id, out2id)
+    
     valid_outcome_mask = valid_outcome_mask.to(device)
 
     END_ID   = type2id["END"]
