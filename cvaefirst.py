@@ -127,7 +127,7 @@ class SeqCVAE(nn.Module):
         emb: int = 32,
         hidden: int = 256,
         zdim: int = 32,
-        cdim: int = 12,
+        cdim: int = 6,
         zone_emb_dim: int = 8,                 
         min_emb_dim: int = 4,                  
     ):
@@ -1115,7 +1115,7 @@ def terminal_reason(g):
 
     # 4) clear turnover-ish endings
     if t in ("Dispossessed", "Miscontrol", "Interception", "Ball Recovery", "Duel", "Block", "Clearance"):
-        return "turnover"
+        return "ball_loss"
 
     # 5) pass/dribble failure
     if t in ("Pass", "Dribble") and last.get("outcome_v1") in ("Incomplete",):
@@ -1126,24 +1126,85 @@ def terminal_reason(g):
 def build_possession_sequences(df, max_T=40):
     sequences = []
     meta = []  # store keys for matching condition vectors later
+    INTERVENTION_TYPES = {
+    "Duel", "Interception", "Block", "Ball Recovery",
+    "Clearance", "Dispossessed", "Miscontrol",
+    "Foul Won", "Foul Committed", "Pressure", "50/50"
+}
+
+    NEW_POSSESSION_TYPES = {"Pass", "Carry", "Shot"}
 
     grp_cols = ["match_id", "possession", "possession_team_id"]
+    seq_id = 0
     for (mid, poss, ptid), g in df.groupby(grp_cols, sort=False):
+        current_ptid = ptid
         g = g.sort_values(["minute","second","event_index"])
         #g = g[g["team_id"] == g["possession_team_id"]]
         if g.empty:
             continue
 
+
         steps = []
+        
+        seq_start_zone = None
+        seq_start_minute = None
+        seq_start_x = None
+        seq_start_y = None
+        seq_start_period = None
         for _, r in g.iterrows():
-            role = "ATT" if r["team_id"] == ptid else "DEF"
+
+            # NEW: split sequence when opponent starts real possession
+            if len(steps) > 0 and r["team_id"] != current_ptid and r["type"] in NEW_POSSESSION_TYPES:
+                
+                # finish current sequence
+                end_reason = "turnover"   # or keep your logic if you want
+                steps.append({
+                    "role": "PAD",
+                    "type": "END",
+                    "sz": "PAD",
+                    "ez": "PAD",
+                    "out": "PAD",
+                    "dt": "PAD",
+                    "term": end_reason,
+                    "xy0": [0.0, 0.0],
+                    "xy1": [0.0, 0.0],
+                    "dxy": [0.0, 0.0],
+                })
+
+                if len(steps) > max_T:
+                    steps = steps[:max_T-1] + [steps[-1]]
+
+                if len(steps) > 1:
+                    sequences.append(steps)
+                    meta.append({
+                    "seq_id": seq_id,
+                    "match_id": mid,
+                    "possession": poss,
+                    "possession_team_id": current_ptid,
+                    "seq_start_zone": seq_start_zone,
+                    "seq_start_minute": seq_start_minute,
+                    "seq_start_x": seq_start_x,
+                    "seq_start_y": seq_start_y,
+                    "seq_start_period": seq_start_period,
+                })
+                    seq_id += 1
+
+                # start new sequence
+                steps = []
+                seq_start_zone = None
+                seq_start_minute = None
+                seq_start_x = None
+                seq_start_y = None
+                seq_start_period = None
+                current_ptid = r["team_id"]  # update possession team
+            role = "ATT" if r["team_id"] == current_ptid else "DEF"
             if "x" in r and "y" in r:
                 x0, y0 = float(r["x"]), float(r["y"])
             else:
                 loc = r.get("location", None)
                 x0, y0 = (float(loc[0]), float(loc[1])) if (isinstance(loc, (list, tuple)) and len(loc) >= 2) else (0.0, 0.0)
 
-            if "endx" in r and "endy" in r:
+            if pd.notna(r.get("endx")) and pd.notna(r.get("endy")):
                 x1, y1 = float(r["endx"]), float(r["endy"])
             else:
                 eloc = r.get("end_location", None)
@@ -1155,6 +1216,12 @@ def build_possession_sequences(df, max_T=40):
    
 
             dx, dy = (x1 - x0), (y1 - y0)
+            if len(steps) == 0:
+                seq_start_zone = r["start_zone"]
+                seq_start_minute = r["minute"]
+                seq_start_x = x0
+                seq_start_y = y0
+                seq_start_period = r["period"]
             steps.append({
                 "role": role,   
                 "type": r["type"],
@@ -1194,7 +1261,18 @@ def build_possession_sequences(df, max_T=40):
             continue
 
         sequences.append(steps)
-        meta.append({"match_id": mid, "possession": poss, "possession_team_id": ptid})
+        meta.append({
+            "seq_id": seq_id,
+            "match_id": mid,
+            "possession": poss,
+            "possession_team_id": current_ptid,
+            "seq_start_zone": seq_start_zone,
+            "seq_start_minute": seq_start_minute,
+            "seq_start_x": seq_start_x,
+            "seq_start_y": seq_start_y,
+            "seq_start_period": seq_start_period,
+        })
+        seq_id += 1
 
     return sequences, pd.DataFrame(meta)
 def build_vocab(values, add_pad=True):
