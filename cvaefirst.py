@@ -1010,10 +1010,10 @@ def pick_competitions_1516(comps, premonly = True):
     ]
     else:
         TARGET = [
-        ("England", "Premier League"),
+        #("England", "Premier League"),
         ("Spain", "La Liga"),
-        ("Italy", "Serie A"),
-        ("Germany", "1. Bundesliga"),
+        #("Italy", "Serie A"),
+        #("Germany", "1. Bundesliga"),
     ]
     selected = []
 
@@ -1036,7 +1036,7 @@ def load_matches(sb_data_root: Path, competition_id: int, season_id: int) -> pd.
     return pd.DataFrame(matches)
 def load_all_events_1516(sb_data_root: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     comps = load_competitions(sb_data_root)
-    picked = pick_competitions_1516(comps)
+    picked = pick_competitions_1516(comps, premonly=True)
 
     all_matches = []
     for _, r in picked.iterrows():
@@ -1069,7 +1069,7 @@ def zone_bounds(zone_name: str):
     ys = [p[1] for p in poly]
     return min(xs), max(xs), min(ys), max(ys)
 
-def xy_to_u_in_zone(x, y, zone_name: str):
+"""def xy_to_u_in_zone(x, y, zone_name: str):
     b = zone_bounds(zone_name)
     if b is None:
         return 0.0, 0.0
@@ -1079,7 +1079,7 @@ def xy_to_u_in_zone(x, y, zone_name: str):
     # clamp to [0,1] in case of boundary noise
     ux = float(np.clip(ux, 0.0, 1.0))
     uy = float(np.clip(uy, 0.0, 1.0))
-    return ux, uy
+    return ux, uy"""
 
 
 
@@ -1165,6 +1165,7 @@ def build_possession_sequences(df, max_T=40):
                     "ez": "PAD",
                     "out": "PAD",
                     "dt": "PAD",
+                    "dt_sec": 0.0,
                     "term": end_reason,
                     "xy0": [0.0, 0.0],
                     "xy1": [0.0, 0.0],
@@ -1230,6 +1231,7 @@ def build_possession_sequences(df, max_T=40):
                 "out": r["outcome_v1"],
                 "dt": r["dt_bin"],
                 "term": "NA_TERM",  # only used for END token
+                "dt_sec": float(r["dt"]) if pd.notna(r["dt"]) else 0.0,
                 
                               
                 "xy0": [x0, y0],
@@ -1248,6 +1250,7 @@ def build_possession_sequences(df, max_T=40):
             "out": "PAD",
             "dt": "PAD",
             "term": end_reason,
+            "dt_sec": 0.0,
             
             "xy0": [0.0, 0.0],
             "xy1": [0.0, 0.0],

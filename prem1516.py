@@ -17,7 +17,7 @@ def load_competitions(sb_data_root: Path) -> pd.DataFrame:
 
 TARGET = [
     ("England", "Premier League"),
-  #  ("Spain", "La Liga"),
+   # ("Spain", "La Liga"),
   #  ("Italy", "Serie A"),
   #  ("Germany", "1. Bundesliga"),
 ]
